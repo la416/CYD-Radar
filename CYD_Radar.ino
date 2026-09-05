@@ -2,23 +2,17 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
+#include "menu.h"
 
 // Display setup
 TFT_eSPI tft = TFT_eSPI();
-
-// WiFi credentials
-const char* ssid = "YOUR_SSID";
-const char* password = "YOUR_PASSWORD";
-
-// FlightRadar24 API
-const char* flightRadarAPI = "https://api.flightradar24.com/common/v1/aircraft.json";
+RadarMenu* radarMenu;
 
 // Display parameters
 const int SCREEN_WIDTH = 320;
 const int SCREEN_HEIGHT = 240;
 const int CENTER_X = SCREEN_WIDTH / 2;
 const int CENTER_Y = SCREEN_HEIGHT / 2;
-const int RADAR_RADIUS = 80;
 
 // Heartbeat animation
 unsigned long lastHeartbeat = 0;
@@ -37,9 +31,18 @@ struct Aircraft {
 Aircraft aircraft[50];
 int aircraftCount = 0;
 
-// Your location (update these)
-const float USER_LAT = 51.5074;  // Example: London
-const float USER_LON = -0.1278;
+// FlightRadar24 API
+const char* flightRadarAPI = "https://api.flightradar24.com/common/v1/aircraft.json";
+
+// Application states
+enum AppState {
+  STATE_MENU,
+  STATE_RUNNING
+};
+
+AppState appState = STATE_MENU;
+unsigned long lastAPICall = 0;
+unsigned long lastDisplayUpdate = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -52,36 +55,55 @@ void setup() {
   
   Serial.println("\n\nCYD Radar starting...");
   
-  // Connect to WiFi
-  connectToWiFi();
+  // Initialize menu system
+  radarMenu = new RadarMenu(&tft);
+  radarMenu->init();
 }
 
 void loop() {
-  if (WiFi.status() == WL_CONNECTED) {
-    // Fetch aircraft data every 5 seconds
-    if (millis() % 5000 < 100) {
-      fetchFlightData();
+  if (appState == STATE_MENU) {
+    radarMenu->update();
+    
+    // Check if user wants to start radar
+    if (radarMenu->getConfig().latitude != 0) {
+      // Menu will transition to running state
+      // Check button to start
+      if (digitalRead(35) == LOW) {  // Down button
+        delay(500);
+        appState = STATE_RUNNING;
+        connectToWiFi();
+      }
+    }
+  } else if (appState == STATE_RUNNING) {
+    Config cfg = radarMenu->getConfig();
+    
+    // Fetch aircraft data periodically
+    if (millis() - lastAPICall > cfg.updateInterval) {
+      lastAPICall = millis();
+      if (WiFi.status() == WL_CONNECTED) {
+        fetchFlightData(cfg.latitude, cfg.longitude, cfg.searchRadius);
+      }
     }
     
-    // Update display with heartbeat animation
-    updateRadarDisplay();
-  } else {
-    tft.fillScreen(TFT_BLACK);
-    tft.setTextColor(TFT_RED);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("WiFi Disconnected", CENTER_X, CENTER_Y);
+    // Update display
+    if (millis() - lastDisplayUpdate > 100) {
+      lastDisplayUpdate = millis();
+      updateRadarDisplay(cfg);
+    }
   }
   
-  delay(100);
+  delay(10);
 }
 
 void connectToWiFi() {
+  Config cfg = radarMenu->getConfig();
+  
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE);
   tft.setTextDatum(MC_DATUM);
   tft.drawString("Connecting WiFi...", CENTER_X, CENTER_Y);
   
-  WiFi.begin(ssid, password);
+  WiFi.begin(cfg.ssid, cfg.password);
   
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 20) {
@@ -98,24 +120,25 @@ void connectToWiFi() {
     delay(1000);
   } else {
     Serial.println("\nWiFi Failed!");
+    tft.setTextColor(TFT_RED);
+    tft.drawString("WiFi Failed", CENTER_X, CENTER_Y);
+    delay(2000);
   }
 }
 
-void fetchFlightData() {
+void fetchFlightData(float userLat, float userLon, float searchRadius) {
   HTTPClient http;
   
-  // Build URL with your location bounds (simplified)
+  // Build URL with location bounds
   String url = String(flightRadarAPI);
   url += "?bounds=";
-  url += String(USER_LAT + 1.5, 4);  // top
+  url += String(userLat + searchRadius, 4);  // top
   url += ",";
-  url += String(USER_LON - 1.5, 4);  // left
+  url += String(userLon - searchRadius, 4);  // left
   url += ",";
-  url += String(USER_LAT - 1.5, 4);  // bottom
+  url += String(userLat - searchRadius, 4);  // bottom
   url += ",";
-  url += String(USER_LON + 1.5, 4);  // right
-  
-  Serial.println("Fetching: " + url);
+  url += String(userLon + searchRadius, 4);  // right
   
   http.begin(url);
   int httpCode = http.GET();
@@ -161,15 +184,11 @@ void parseFlightData(String payload) {
   Serial.printf("Found %d aircraft\n", aircraftCount);
 }
 
-void updateRadarDisplay() {
+void updateRadarDisplay(Config cfg) {
   static unsigned long lastUpdate = 0;
   unsigned long now = millis();
   
-  // Update display every 100ms
-  if (now - lastUpdate < 100) return;
-  lastUpdate = now;
-  
-  // Clear screen (with fade effect for heartbeat)
+  // Update heartbeat phase
   if (now - lastHeartbeat > HEARTBEAT_INTERVAL) {
     lastHeartbeat = now;
     heartbeatPhase = 0;
@@ -179,48 +198,48 @@ void updateRadarDisplay() {
   int brightness = 20 + (heartbeatPhase < 10 ? heartbeatPhase * 3 : 0);
   
   // Draw radar
-  drawRadarBackground(brightness);
-  drawAircraft();
+  drawRadarBackground(brightness, cfg.radarRadius);
+  drawAircraft(cfg.latitude, cfg.longitude, cfg.radarRadius);
   drawUserLocation();
-  drawInfo();
+  drawInfo(cfg);
 }
 
-void drawRadarBackground(int intensity) {
+void drawRadarBackground(int intensity, int radarRadius) {
   tft.fillScreen(TFT_BLACK);
   
   // Draw concentric circles (radar rings)
   int ringColor = tft.color565(intensity, intensity / 2, intensity / 2);
   
   // Outer ring
-  tft.drawCircle(CENTER_X, CENTER_Y, RADAR_RADIUS, ringColor);
-  tft.drawCircle(CENTER_X, CENTER_Y, RADAR_RADIUS / 2, ringColor);
-  tft.drawCircle(CENTER_X, CENTER_Y, RADAR_RADIUS / 4, ringColor);
+  tft.drawCircle(CENTER_X, CENTER_Y, radarRadius, ringColor);
+  tft.drawCircle(CENTER_X, CENTER_Y, radarRadius / 2, ringColor);
+  tft.drawCircle(CENTER_X, CENTER_Y, radarRadius / 4, ringColor);
   
   // Crosshairs
-  tft.drawLine(CENTER_X - RADAR_RADIUS, CENTER_Y, CENTER_X + RADAR_RADIUS, CENTER_Y, ringColor);
-  tft.drawLine(CENTER_X, CENTER_Y - RADAR_RADIUS, CENTER_X, CENTER_Y + RADAR_RADIUS, ringColor);
+  tft.drawLine(CENTER_X - radarRadius, CENTER_Y, CENTER_X + radarRadius, CENTER_Y, ringColor);
+  tft.drawLine(CENTER_X, CENTER_Y - radarRadius, CENTER_X, CENTER_Y + radarRadius, ringColor);
   
   // Diagonal lines
-  int offset = (RADAR_RADIUS * 0.707); // 45 degrees
+  int offset = (radarRadius * 0.707); // 45 degrees
   tft.drawLine(CENTER_X - offset, CENTER_Y - offset, CENTER_X + offset, CENTER_Y + offset, ringColor);
   tft.drawLine(CENTER_X - offset, CENTER_Y + offset, CENTER_X + offset, CENTER_Y - offset, ringColor);
 }
 
-void drawAircraft() {
+void drawAircraft(float userLat, float userLon, int radarRadius) {
   for (int i = 0; i < aircraftCount; i++) {
-    float dx = aircraft[i].lon - USER_LON;
-    float dy = aircraft[i].lat - USER_LAT;
+    float dx = aircraft[i].lon - userLon;
+    float dy = aircraft[i].lat - userLat;
     
     // Convert to screen coordinates (simple projection)
     int screenX = CENTER_X + (dx * 50);  // Scale factor
     int screenY = CENTER_Y - (dy * 50);  // Latitude inverted
     
     // Check if within radar range
-    if (abs(screenX - CENTER_X) < RADAR_RADIUS && abs(screenY - CENTER_Y) < RADAR_RADIUS) {
+    if (abs(screenX - CENTER_X) < radarRadius && abs(screenY - CENTER_Y) < radarRadius) {
       // Color based on altitude
       uint16_t color = getAltitudeColor(aircraft[i].altitude);
       
-      // Draw aircraft as small triangle/dot
+      // Draw aircraft as small dot
       tft.fillCircle(screenX, screenY, 3, color);
       
       // Heartbeat pulse effect
@@ -237,7 +256,7 @@ void drawUserLocation() {
   tft.drawCircle(CENTER_X, CENTER_Y, 8, TFT_GREEN);
 }
 
-void drawInfo() {
+void drawInfo(Config cfg) {
   tft.setTextColor(TFT_WHITE);
   tft.setTextDatum(TL_DATUM);
   tft.setTextSize(1);
@@ -249,8 +268,19 @@ void drawInfo() {
   int rssi = WiFi.RSSI();
   tft.drawString("RSSI: " + String(rssi) + " dBm", 5, 20);
   
+  // Location
+  char locStr[30];
+  snprintf(locStr, sizeof(locStr), "%.2f, %.2f", cfg.latitude, cfg.longitude);
+  tft.drawString(locStr, 5, 215);
+  
   // Scale info
-  tft.drawString("1.5deg", RADAR_RADIUS - 30, 5);
+  tft.setTextDatum(TR_DATUM);
+  tft.drawString("1.5deg", SCREEN_WIDTH - 5, 5);
+  
+  // Menu hint
+  tft.setTextColor(TFT_ORANGE);
+  tft.setTextDatum(BL_DATUM);
+  tft.drawString("Press UP for menu", 5, SCREEN_HEIGHT - 5);
 }
 
 uint16_t getAltitudeColor(float altitude) {
