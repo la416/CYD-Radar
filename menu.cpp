@@ -1,61 +1,136 @@
-// Menu system implementation for CYD Radar
-
+// Menu system implementation with touchscreen support
 #include "menu.h"
 #include <EEPROM.h>
 
 #define EEPROM_SIZE 512
 #define CONFIG_START_ADDR 0
 
-RadarMenu::RadarMenu(TFT_eSPI* displayPtr) {
+RadarMenu::RadarMenu(TFT_eSPI* displayPtr, TouchHandler* touchPtr) {
   tft = displayPtr;
+  touch = touchPtr;
   currentState = MENU_MAIN;
   selectedOption = 0;
   lastButtonCheck = 0;
   buttonUpState = HIGH;
   buttonDownState = HIGH;
+  
+  // Define touch button areas
+  upButton = {10, 10, 50, 40, "UP", 1};
+  downButton = {10, 190, 50, 40, "DOWN", 2};
+  selectButton = {260, 190, 50, 40, "SEL", 3};
+  backButton = {260, 10, 50, 40, "BACK", 4};
 }
 
 void RadarMenu::init() {
+  // Initialize hardware buttons
   pinMode(BUTTON_UP, INPUT);
   pinMode(BUTTON_DOWN, INPUT);
   
+  // Initialize touchscreen
+  touch->init();
+  
+  // Initialize EEPROM
   EEPROM.begin(EEPROM_SIZE);
   loadConfig();
   
+  // Display splash screen
   tft->fillScreen(TFT_BLACK);
-  tft->setTextColor(TFT_WHITE);
+  tft->setTextColor(TFT_CYAN, TFT_BLACK);
   tft->setTextDatum(MC_DATUM);
-  tft->setTextSize(2);
-  tft->drawString("CYD RADAR", tft->width()/2, tft->height()/2 - 20);
+  tft->setTextSize(3);
+  tft->drawString("CYD RADAR", tft->width()/2, tft->height()/2 - 30);
   tft->setTextSize(1);
-  tft->drawString("Press UP to configure", tft->width()/2, tft->height()/2 + 20);
-  delay(2000);
+  tft->setTextColor(TFT_YELLOW);
+  tft->drawString("Press UP or TAP UP button to configure", tft->width()/2, tft->height()/2 + 20);
+  tft->drawString("Touch and button control enabled", tft->width()/2, tft->height()/2 + 40);
+  delay(3000);
 }
 
 void RadarMenu::update() {
-  if (millis() - lastButtonCheck < 50) return;  // Debounce
+  if (millis() - lastButtonCheck < 50) return;
   lastButtonCheck = millis();
   
   handleButtonInput();
+  handleTouchInput();
   draw();
 }
 
 void RadarMenu::handleButtonInput() {
-  int upPressed = !digitalRead(BUTTON_UP);    // LOW when pressed
-  int downPressed = !digitalRead(BUTTON_DOWN); // LOW when pressed
+  // Read hardware buttons (GPIO0 and GPIO35)
+  int upPressed = !digitalRead(BUTTON_UP);
+  int downPressed = !digitalRead(BUTTON_DOWN);
   
   // UP button: move selection up
-  if (upPressed && buttonUpState == LOW) {
-    selectedOption--;
-    if (selectedOption < 0) selectedOption = 0;
+  if (upPressed && buttonUpState == HIGH) {
+    buttonUpState = LOW;
+    selectedOption = max(0, selectedOption - 1);
   }
-  buttonUpState = upPressed ? LOW : HIGH;
+  if (!upPressed) buttonUpState = HIGH;
   
-  // DOWN button: move selection down or enter menu
-  if (downPressed && buttonDownState == LOW) {
-    selectedOption++;
+  // DOWN button: select/move down
+  if (downPressed && buttonDownState == HIGH) {
+    buttonDownState = LOW;
+    selectedOption = min(4, selectedOption + 1);
   }
-  buttonDownState = downPressed ? LOW : HIGH;
+  if (!downPressed) buttonDownState = HIGH;
+}
+
+void RadarMenu::handleTouchInput() {
+  if (!touch->isTouched()) return;
+  
+  int touchX, touchY;
+  touch->getTouch(touchX, touchY);
+  
+  // UP navigation
+  if (touchX >= upButton.x && touchX <= upButton.x + upButton.w &&
+      touchY >= upButton.y && touchY <= upButton.y + upButton.h) {
+    selectedOption = max(0, selectedOption - 1);
+    delay(200);
+    return;
+  }
+  
+  // DOWN navigation
+  if (touchX >= downButton.x && touchX <= downButton.x + downButton.w &&
+      touchY >= downButton.y && touchY <= downButton.y + downButton.h) {
+    selectedOption = min(4, selectedOption + 1);
+    delay(200);
+    return;
+  }
+  
+  // SELECT button
+  if (touchX >= selectButton.x && touchX <= selectButton.x + selectButton.w &&
+      touchY >= selectButton.y && touchY <= selectButton.y + selectButton.h) {
+    if (currentState == MENU_MAIN) {
+      currentState = (MenuState)(MENU_WIFI + selectedOption);
+      selectedOption = 0;
+    }
+    delay(200);
+    return;
+  }
+  
+  // BACK button
+  if (touchX >= backButton.x && touchX <= backButton.x + backButton.w &&
+      touchY >= backButton.y && touchY <= backButton.y + backButton.h) {
+    currentState = MENU_MAIN;
+    selectedOption = 0;
+    delay(200);
+    return;
+  }
+  
+  // Touch menu items directly
+  if (currentState == MENU_MAIN) {
+    for (int i = 0; i < 5; i++) {
+      int itemY = 60 + i * 30;
+      if (touchY >= itemY && touchY <= itemY + 25) {
+        selectedOption = i;
+        delay(100);
+        currentState = (MenuState)(MENU_WIFI + i);
+        selectedOption = 0;
+        delay(200);
+        return;
+      }
+    }
+  }
 }
 
 void RadarMenu::draw() {
@@ -75,33 +150,59 @@ void RadarMenu::draw() {
     case MENU_RADAR:
       displayRadarMenu();
       break;
-    case MENU_RUNNING:
-      // Running radar - minimal UI
+    default:
       break;
   }
+  
+  drawNavigationButtons();
 }
 
 void RadarMenu::drawMenuHeader(const char* title) {
   tft->fillScreen(TFT_BLACK);
-  tft->setTextColor(TFT_YELLOW);
+  tft->setTextColor(TFT_CYAN, TFT_BLACK);
   tft->setTextDatum(TL_DATUM);
   tft->setTextSize(2);
-  tft->drawString(title, 5, 5);
-  tft->setTextSize(1);
-  tft->setTextColor(TFT_WHITE);
+  tft->drawString(title, 70, 10);
+  tft->drawFastHLine(0, 40, 320, TFT_CYAN);
 }
 
 void RadarMenu::drawMenuItem(int y, const char* label, const char* value, bool selected) {
   uint16_t bgColor = selected ? TFT_BLUE : TFT_BLACK;
   uint16_t textColor = selected ? TFT_WHITE : TFT_CYAN;
   
-  tft->fillRect(0, y, tft->width(), 25, bgColor);
-  tft->setTextColor(textColor);
+  tft->fillRect(60, y, 260, 25, bgColor);
+  tft->setTextColor(textColor, bgColor);
   tft->setTextDatum(TL_DATUM);
-  tft->drawString(label, 10, y + 5);
+  tft->setTextSize(1);
+  tft->drawString(label, 70, y + 5);
   
   tft->setTextDatum(TR_DATUM);
-  tft->drawString(value, tft->width() - 10, y + 5);
+  tft->drawString(value, 310, y + 5);
+}
+
+void RadarMenu::drawNavigationButtons() {
+  tft->setTextSize(1);
+  tft->setTextColor(TFT_WHITE, TFT_DARKGREY);
+  
+  // UP button
+  tft->fillRect(upButton.x, upButton.y, upButton.w, upButton.h, TFT_DARKGREY);
+  tft->setTextDatum(MC_DATUM);
+  tft->setTextColor(TFT_WHITE, TFT_DARKGREY);
+  tft->drawString("UP", upButton.x + upButton.w/2, upButton.y + upButton.h/2);
+  
+  // DOWN button
+  tft->fillRect(downButton.x, downButton.y, downButton.w, downButton.h, TFT_DARKGREY);
+  tft->drawString("DN", downButton.x + downButton.w/2, downButton.y + downButton.h/2);
+  
+  // SELECT button
+  tft->fillRect(selectButton.x, selectButton.y, selectButton.w, selectButton.h, TFT_GREEN);
+  tft->setTextColor(TFT_BLACK, TFT_GREEN);
+  tft->drawString("SEL", selectButton.x + selectButton.w/2, selectButton.y + selectButton.h/2);
+  
+  // BACK button
+  tft->fillRect(backButton.x, backButton.y, backButton.w, backButton.h, TFT_RED);
+  tft->setTextColor(TFT_WHITE, TFT_RED);
+  tft->drawString("BCK", backButton.x + backButton.w/2, backButton.y + backButton.h/2);
 }
 
 void RadarMenu::displayMainMenu() {
@@ -119,30 +220,9 @@ void RadarMenu::displayMainMenu() {
     "Start Radar"
   };
   
-  const int maxItems = 5;
-  if (selectedOption >= maxItems) selectedOption = maxItems - 1;
-  
-  for (int i = 0; i < maxItems; i++) {
-    int y = 40 + (i * 35);
-    drawMenuItem(y, menuItems[i], "", i == selectedOption);
-    
-    // Handle selection
-    if (i == selectedOption && digitalRead(BUTTON_DOWN) == LOW) {
-      delay(200);
-      switch (i) {
-        case 0: currentState = MENU_WIFI; selectedOption = 0; break;
-        case 1: currentState = MENU_LOCATION; selectedOption = 0; break;
-        case 2: currentState = MENU_DISPLAY; selectedOption = 0; break;
-        case 3: currentState = MENU_RADAR; selectedOption = 0; break;
-        case 4: currentState = MENU_RUNNING; saveConfig(); break;
-      }
-    }
+  for (int i = 0; i < 5; i++) {
+    drawMenuItem(60 + i * 30, menuItems[i], "", i == selectedOption);
   }
-  
-  tft->setTextColor(TFT_GREEN);
-  tft->setTextDatum(BL_DATUM);
-  tft->setTextSize(1);
-  tft->drawString("UP/DOWN to select", 5, tft->height() - 5);
 }
 
 void RadarMenu::displayWiFiMenu() {
@@ -152,25 +232,17 @@ void RadarMenu::displayWiFiMenu() {
   
   drawMenuHeader("WiFi Settings");
   
-  const char* menuItems[] = { "SSID", "Password", "Back" };
-  const int maxItems = 3;
-  if (selectedOption >= maxItems) selectedOption = maxItems - 1;
-  
   char ssidDisplay[20];
   snprintf(ssidDisplay, sizeof(ssidDisplay), "%.15s", config.ssid);
   
-  char passDisplay[20];
-  snprintf(passDisplay, sizeof(passDisplay), "%s", strlen(config.password) > 0 ? "***" : "Not set");
-  
-  drawMenuItem(40, menuItems[0], ssidDisplay, 0 == selectedOption);
-  drawMenuItem(75, menuItems[1], passDisplay, 1 == selectedOption);
-  drawMenuItem(110, menuItems[2], "", 2 == selectedOption);
-  
-  if (2 == selectedOption && digitalRead(BUTTON_DOWN) == LOW) {
-    delay(200);
-    currentState = MENU_MAIN;
-    selectedOption = 0;
-  }
+  tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft->setTextDatum(TL_DATUM);
+  tft->setTextSize(1);
+  tft->drawString("SSID:", 70, 60);
+  tft->drawString(ssidDisplay, 70, 80);
+  tft->drawString("Password:", 70, 105);
+  tft->drawString("***", 70, 125);
+  tft->drawString("(Edit WiFi in code)", 70, 150);
 }
 
 void RadarMenu::displayLocationMenu() {
@@ -181,29 +253,13 @@ void RadarMenu::displayLocationMenu() {
   drawMenuHeader("Location Setup");
   
   char latStr[20], lonStr[20], radiusStr[20];
-  snprintf(latStr, sizeof(latStr), "%.4f", config.latitude);
-  snprintf(lonStr, sizeof(lonStr), "%.4f", config.longitude);
-  snprintf(radiusStr, sizeof(radiusStr), "%.1f deg", config.searchRadius);
+  dtostrf(config.latitude, 8, 4, latStr);
+  dtostrf(config.longitude, 8, 4, lonStr);
+  dtostrf(config.searchRadius, 4, 2, radiusStr);
   
-  drawMenuItem(40, "Latitude", latStr, 0 == selectedOption);
-  drawMenuItem(75, "Longitude", lonStr, 1 == selectedOption);
-  drawMenuItem(110, "Search Radius", radiusStr, 2 == selectedOption);
-  
-  // Simple increment/decrement with buttons
-  if (0 == selectedOption && digitalRead(BUTTON_UP) == LOW) {
-    config.latitude += 0.01;
-    delay(100);
-  }
-  if (0 == selectedOption && digitalRead(BUTTON_DOWN) == LOW) {
-    config.latitude -= 0.01;
-    delay(100);
-  }
-  
-  if (2 == selectedOption && digitalRead(BUTTON_DOWN) == LOW) {
-    delay(200);
-    currentState = MENU_MAIN;
-    selectedOption = 1;
-  }
+  drawMenuItem(60, "Latitude", latStr, selectedOption == 0);
+  drawMenuItem(90, "Longitude", lonStr, selectedOption == 1);
+  drawMenuItem(120, "Search Radius", radiusStr, selectedOption == 2);
 }
 
 void RadarMenu::displayDisplayMenu() {
@@ -213,19 +269,12 @@ void RadarMenu::displayDisplayMenu() {
   
   drawMenuHeader("Display Config");
   
-  char radarStr[20], updateStr[20];
-  snprintf(radarStr, sizeof(radarStr), "%d px", config.radarRadius);
-  snprintf(updateStr, sizeof(updateStr), "%d ms", config.updateInterval);
+  char radiusStr[10], intervalStr[10];
+  itoa(config.radarRadius, radiusStr, 10);
+  itoa(config.updateInterval, intervalStr, 10);
   
-  drawMenuItem(40, "Radar Radius", radarStr, 0 == selectedOption);
-  drawMenuItem(75, "Update Rate", updateStr, 1 == selectedOption);
-  drawMenuItem(110, "Back", "", 2 == selectedOption);
-  
-  if (2 == selectedOption && digitalRead(BUTTON_DOWN) == LOW) {
-    delay(200);
-    currentState = MENU_MAIN;
-    selectedOption = 2;
-  }
+  drawMenuItem(60, "Radar Radius", radiusStr, selectedOption == 0);
+  drawMenuItem(90, "Update Rate (ms)", intervalStr, selectedOption == 1);
 }
 
 void RadarMenu::displayRadarMenu() {
@@ -236,25 +285,15 @@ void RadarMenu::displayRadarMenu() {
   drawMenuHeader("Radar Settings");
   
   const char* debugStr = config.debugMode ? "ON" : "OFF";
+  drawMenuItem(60, "Debug Mode", debugStr, selectedOption == 0);
   
-  drawMenuItem(40, "Debug Mode", debugStr, 0 == selectedOption);
-  drawMenuItem(75, "Info:", "Press DOWN to see", 1 == selectedOption);
-  drawMenuItem(110, "Back", "", 2 == selectedOption);
-  
-  if (0 == selectedOption && digitalRead(BUTTON_DOWN) == LOW) {
-    config.debugMode = !config.debugMode;
-    delay(200);
-  }
-  
-  if (2 == selectedOption && digitalRead(BUTTON_DOWN) == LOW) {
-    delay(200);
-    currentState = MENU_MAIN;
-    selectedOption = 3;
-  }
+  tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft->setTextDatum(TL_DATUM);
+  tft->setTextSize(1);
+  tft->drawString("Tap BACK to return", 70, 140);
 }
 
 void RadarMenu::saveConfig() {
-  // Write to EEPROM
   EEPROM.writeString(CONFIG_START_ADDR, config.ssid);
   EEPROM.writeString(CONFIG_START_ADDR + 32, config.password);
   EEPROM.writeFloat(CONFIG_START_ADDR + 64, config.latitude);
@@ -264,10 +303,10 @@ void RadarMenu::saveConfig() {
   EEPROM.writeInt(CONFIG_START_ADDR + 80, config.radarRadius);
   EEPROM.writeBool(CONFIG_START_ADDR + 84, config.debugMode);
   EEPROM.commit();
+  Serial.println("Configuration saved to EEPROM");
 }
 
 void RadarMenu::loadConfig() {
-  // Load from EEPROM with defaults
   String ssidStr = EEPROM.readString(CONFIG_START_ADDR);
   String passStr = EEPROM.readString(CONFIG_START_ADDR + 32);
   
