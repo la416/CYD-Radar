@@ -14,7 +14,7 @@ void TouchHandler::init() {
   // Initialize SPI for touchscreen
   SPI.begin();
   
-  // Initialize XPT2046 touchscreen
+  // Initialize XPT2046 touchscreen (use -> for pointer)
   ts.begin();
   ts.setRotation(1);  // Match display rotation
   
