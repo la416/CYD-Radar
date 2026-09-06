@@ -2,10 +2,12 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <TFT_eSPI.h>
+#include "touchscreen.h"
 #include "menu.h"
 
 // Display setup
 TFT_eSPI tft = TFT_eSPI();
+TouchHandler* touchHandler;
 RadarMenu* radarMenu;
 
 // Display parameters
@@ -55,8 +57,12 @@ void setup() {
   
   Serial.println("\n\nCYD Radar starting...");
   
-  // Initialize menu system
-  radarMenu = new RadarMenu(&tft);
+  // Initialize touchscreen handler
+  touchHandler = new TouchHandler(SCREEN_WIDTH, SCREEN_HEIGHT);
+  touchHandler->init();
+  
+  // Initialize menu system with touchscreen
+  radarMenu = new RadarMenu(&tft, touchHandler);
   radarMenu->init();
 }
 
