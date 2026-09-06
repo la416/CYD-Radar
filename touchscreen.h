@@ -8,8 +8,8 @@
 #include <XPT2046_Touchscreen.h>
 
 // Touch controller pins for CYD 2432S028
-#define TOUCH_CS GPIO_NUM_33   // Chip Select
-#define TOUCH_IRQ GPIO_NUM_36  // Interrupt
+#define TOUCH_CS 33   // GPIO33 - Chip Select
+#define TOUCH_IRQ 36  // GPIO36 - Interrupt
 
 // Display calibration values (may need adjustment)
 #define TOUCH_MIN_X 150
@@ -26,7 +26,7 @@ struct TouchButton {
 
 class TouchHandler {
   private:
-    XPT2046_Touchscreen* ts;
+    XPT2046_Touchscreen ts;  // Changed from pointer to object
     int screenWidth;
     int screenHeight;
     uint32_t lastTouchTime;
